@@ -140,12 +140,27 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(500);
   }
 });
+console.log("===== ENV CHECK =====");
+console.log("VERIFY_TOKEN:", process.env.VERIFY_TOKEN);
+console.log(
+  "PAGE_ACCESS_TOKEN:",
+  process.env.PAGE_ACCESS_TOKEN
+    ? process.env.PAGE_ACCESS_TOKEN.substring(0, 20) + "..."
+    : "NOT FOUND"
+);
+console.log("=====================");
 
-/*
- Start Server
-*/
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+/*
+ Start Server
+*/
+// const PORT = process.env.PORT || 5000;
+
+// app.listen(PORT, () => {
+//   console.log(`Server running on port ${PORT}`);
+// });
