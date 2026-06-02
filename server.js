@@ -9,14 +9,45 @@ const app = express();
 app.use(bodyParser.json());
 
 /*
- Root Route
+==================================
+ENV CHECK
+==================================
+*/
+console.log("===== ENV CHECK =====");
+
+console.log("VERIFY_TOKEN:", process.env.VERIFY_TOKEN);
+
+console.log(
+  "PAGE_ACCESS_TOKEN:",
+  process.env.PAGE_ACCESS_TOKEN
+    ? process.env.PAGE_ACCESS_TOKEN.substring(0, 20) + "..."
+    : "NOT FOUND"
+);
+
+console.log(
+  "TELEGRAM_BOT_TOKEN:",
+  process.env.TELEGRAM_BOT_TOKEN
+    ? process.env.TELEGRAM_BOT_TOKEN.substring(0, 15) + "..."
+    : "NOT FOUND"
+);
+
+console.log("TELEGRAM_CHAT_ID:", process.env.TELEGRAM_CHAT_ID);
+
+console.log("=====================");
+
+/*
+==================================
+ROOT
+==================================
 */
 app.get("/", (req, res) => {
   res.send("Facebook Lead Webhook Server Running 🚀");
 });
 
 /*
- Webhook Verification
+==================================
+WEBHOOK VERIFY
+==================================
 */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -25,7 +56,10 @@ app.get("/webhook", (req, res) => {
 
   console.log("Webhook verification request received");
 
-  if (mode === "subscribe" && token === process.env.VERIFY_TOKEN) {
+  if (
+    mode === "subscribe" &&
+    token === process.env.VERIFY_TOKEN
+  ) {
     console.log("Webhook verified successfully");
     return res.status(200).send(challenge);
   }
@@ -35,12 +69,14 @@ app.get("/webhook", (req, res) => {
 });
 
 /*
- Receive Facebook Lead Webhook
+==================================
+RECEIVE LEAD
+==================================
 */
 app.post("/webhook", async (req, res) => {
   try {
     console.log(
-      "================ NEW WEBHOOK RECEIVED ================"
+      "\n================ NEW WEBHOOK RECEIVED ================\n"
     );
 
     console.log("Webhook Data:");
@@ -48,91 +84,139 @@ app.post("/webhook", async (req, res) => {
 
     const body = req.body;
 
-    if (body.object === "page") {
-      for (const entry of body.entry) {
-        for (const change of entry.changes) {
-          console.log("Field:", change.field);
+    if (body.object !== "page") {
+      console.log("Unknown object");
+      return res.sendStatus(404);
+    }
 
-          if (change.field === "leadgen") {
-            const leadgen_id = change.value.leadgen_id;
+    for (const entry of body.entry) {
+      for (const change of entry.changes) {
+        console.log("Field:", change.field);
 
-            console.log("Leadgen ID:", leadgen_id);
+        if (change.field !== "leadgen") continue;
 
-            /*
-              Fetch Lead Details
-            */
-            const response = await axios.get(
-              `https://graph.facebook.com/v25.0/${leadgen_id}`,
-              {
-                params: {
-                  access_token: process.env.PAGE_ACCESS_TOKEN,
-                },
-              }
-            );
+        const leadgen_id = change.value.leadgen_id;
 
-            const leadData = response.data;
+        console.log("Leadgen ID:", leadgen_id);
 
-            console.log("Lead Data:");
-            console.log(JSON.stringify(leadData, null, 2));
+        /*
+        ==================================
+        FETCH LEAD DATA
+        ==================================
+        */
+        const leadResponse = await axios.get(
+          `https://graph.facebook.com/v25.0/${leadgen_id}`,
+          {
+            params: {
+              access_token:
+                process.env.PAGE_ACCESS_TOKEN,
+            },
+          }
+        );
 
-            let name = "";
-            let email = "";
-            let phone = "";
+        const leadData = leadResponse.data;
 
-            if (leadData.field_data) {
-              leadData.field_data.forEach((field) => {
-                if (field.name === "full_name") {
-                  name = field.values[0];
-                }
+        console.log("\nLead Data:");
+        console.log(JSON.stringify(leadData, null, 2));
 
-                if (field.name === "email") {
-                  email = field.values[0];
-                }
+        let name = "";
+        let email = "";
+        let phone = "";
 
-                if (field.name === "phone_number") {
-                  phone = field.values[0];
-                }
-              });
+        if (leadData.field_data) {
+          leadData.field_data.forEach((field) => {
+            if (field.name === "full_name") {
+              name = field.values[0];
             }
 
-            const message = `
+            if (field.name === "email") {
+              email = field.values[0];
+            }
+
+            if (field.name === "phone_number") {
+              phone = field.values[0];
+            }
+          });
+        }
+
+        /*
+        ==================================
+        TELEGRAM MESSAGE
+        ==================================
+        */
+        const message = `
 🚀 New Facebook Lead
 
 👤 Name: ${name}
 📧 Email: ${email}
 📱 Phone: ${phone}
+
+🆔 Lead ID: ${leadgen_id}
 `;
 
-            /*
-              Send Telegram Message
-            */
-            const telegramResponse = await axios.post(
-              `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-              {
-                chat_id: process.env.TELEGRAM_CHAT_ID,
-                text: message,
-              }
-            );
+        console.log("\nSending Telegram Message...");
+        console.log(message);
 
-            console.log("Telegram Response:");
-            console.log(telegramResponse.data);
+        console.log(
+          "Bot Token Exists:",
+          !!process.env.TELEGRAM_BOT_TOKEN
+        );
 
-            console.log("Telegram message sent successfully ✅");
+        console.log(
+          "Chat ID:",
+          process.env.TELEGRAM_CHAT_ID
+        );
+
+        /*
+        ==================================
+        SEND TO TELEGRAM
+        ==================================
+        */
+        const telegramResponse = await axios.post(
+          `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+          {
+            chat_id: process.env.TELEGRAM_CHAT_ID,
+            text: message,
           }
-        }
-      }
+        );
 
-      return res.sendStatus(200);
+        console.log(
+          "\nTelegram Response:"
+        );
+
+        console.log(
+          JSON.stringify(
+            telegramResponse.data,
+            null,
+            2
+          )
+        );
+
+        console.log(
+          "Telegram message sent successfully ✅"
+        );
+      }
     }
 
-    console.log("Unknown webhook object");
-
-    return res.sendStatus(404);
+    return res.sendStatus(200);
   } catch (error) {
-    console.log("=========== ERROR ===========");
+    console.log(
+      "\n=========== ERROR ==========="
+    );
 
     if (error.response) {
-      console.log(error.response.data);
+      console.log(
+        "Status:",
+        error.response.status
+      );
+
+      console.log(
+        JSON.stringify(
+          error.response.data,
+          null,
+          2
+        )
+      );
     } else {
       console.log(error.message);
     }
@@ -140,27 +224,16 @@ app.post("/webhook", async (req, res) => {
     return res.sendStatus(500);
   }
 });
-console.log("===== ENV CHECK =====");
-console.log("VERIFY_TOKEN:", process.env.VERIFY_TOKEN);
-console.log(
-  "PAGE_ACCESS_TOKEN:",
-  process.env.PAGE_ACCESS_TOKEN
-    ? process.env.PAGE_ACCESS_TOKEN.substring(0, 20) + "..."
-    : "NOT FOUND"
-);
-console.log("=====================");
 
+/*
+==================================
+START SERVER
+==================================
+*/
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(
+    `Server running on port ${PORT}`
+  );
 });
-
-/*
- Start Server
-*/
-// const PORT = process.env.PORT || 5000;
-
-// app.listen(PORT, () => {
-//   console.log(`Server running on port ${PORT}`);
-// });
