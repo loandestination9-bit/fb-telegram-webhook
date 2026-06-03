@@ -70,7 +70,7 @@ app.get("/webhook", (req, res) => {
 
 /*
 ==================================
-RECEIVE LEAD
+FACEBOOK LEAD WEBHOOK
 ==================================
 */
 app.post("/webhook", async (req, res) => {
@@ -101,15 +101,14 @@ app.post("/webhook", async (req, res) => {
 
         /*
         ==================================
-        FETCH LEAD DATA
+        FETCH LEAD DETAILS
         ==================================
         */
         const leadResponse = await axios.get(
           `https://graph.facebook.com/v25.0/${leadgen_id}`,
           {
             params: {
-              access_token:
-                process.env.PAGE_ACCESS_TOKEN,
+              access_token: process.env.PAGE_ACCESS_TOKEN,
             },
           }
         );
@@ -119,53 +118,27 @@ app.post("/webhook", async (req, res) => {
         console.log("\nLead Data:");
         console.log(JSON.stringify(leadData, null, 2));
 
-        let name = "";
-        let email = "";
-        let phone = "";
+        /*
+        ==================================
+        BUILD TELEGRAM MESSAGE
+        ==================================
+        */
+        let leadMessage = `🚀 New Facebook Lead\n\n`;
 
         if (leadData.field_data) {
           leadData.field_data.forEach((field) => {
-            if (field.name === "full_name") {
-              name = field.values[0];
-            }
+            const value = field.values
+              ? field.values.join(", ")
+              : "";
 
-            if (field.name === "email") {
-              email = field.values[0];
-            }
-
-            if (field.name === "phone_number") {
-              phone = field.values[0];
-            }
+            leadMessage += `📌 ${field.name}: ${value}\n`;
           });
         }
 
-        /*
-        ==================================
-        TELEGRAM MESSAGE
-        ==================================
-        */
-        const message = `
-🚀 New Facebook Lead
+        leadMessage += `\n🆔 Lead ID: ${leadgen_id}`;
 
-👤 Name: ${name}
-📧 Email: ${email}
-📱 Phone: ${phone}
-
-🆔 Lead ID: ${leadgen_id}
-`;
-
-        console.log("\nSending Telegram Message...");
-        console.log(message);
-
-        console.log(
-          "Bot Token Exists:",
-          !!process.env.TELEGRAM_BOT_TOKEN
-        );
-
-        console.log(
-          "Chat ID:",
-          process.env.TELEGRAM_CHAT_ID
-        );
+        console.log("\nTelegram Message:");
+        console.log(leadMessage);
 
         /*
         ==================================
@@ -176,20 +149,13 @@ app.post("/webhook", async (req, res) => {
           `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
           {
             chat_id: process.env.TELEGRAM_CHAT_ID,
-            text: message,
+            text: leadMessage,
           }
         );
 
+        console.log("\nTelegram Response:");
         console.log(
-          "\nTelegram Response:"
-        );
-
-        console.log(
-          JSON.stringify(
-            telegramResponse.data,
-            null,
-            2
-          )
+          JSON.stringify(telegramResponse.data, null, 2)
         );
 
         console.log(
@@ -233,7 +199,5 @@ START SERVER
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
-  console.log(
-    `Server running on port ${PORT}`
-  );
+  console.log(`Server running on port ${PORT}`);
 });
