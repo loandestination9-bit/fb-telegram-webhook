@@ -9,6 +9,46 @@ const app = express();
 app.use(express.json());
 
 // ==========================================
+// CONFIGURATION
+// ==========================================
+
+const PORT = process.env.PORT || 5000;
+const FACEBOOK_API_VERSION = "v25.0";
+
+const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+
+// Support one or multiple Education Loan forms
+const EDUCATION_FORM_IDS = (
+  process.env.EDUCATION_FORM_IDS ||
+  process.env.EDUCATION_FORM_ID ||
+  ""
+)
+  .split(",")
+  .map(id => id.trim())
+  .filter(Boolean);
+
+// Home Loan form
+const HOME_LOAN_FORM_ID = String(
+  process.env.HOME_LOAN_FORM_ID || ""
+).trim();
+
+// Education Telegram credentials
+const EDU_BOT_TOKEN =
+  process.env.EDU_TELEGRAM_BOT_TOKEN ||
+  process.env.TELEGRAM_BOT_TOKEN;
+
+const EDU_CHAT_ID =
+  process.env.EDU_TELEGRAM_CHAT_ID ||
+  process.env.TELEGRAM_CHAT_ID;
+
+// Home Loan Telegram credentials
+const HOME_BOT_TOKEN =
+  process.env.HOME_TELEGRAM_BOT_TOKEN;
+
+const HOME_CHAT_ID =
+  process.env.HOME_TELEGRAM_CHAT_ID;
+
+// ==========================================
 // ROOT ROUTE
 // ==========================================
 
@@ -17,7 +57,7 @@ app.get("/", (req, res) => {
 });
 
 // ==========================================
-// FACEBOOK WEBHOOK VERIFICATION
+// WEBHOOK VERIFICATION
 // ==========================================
 
 app.get("/webhook", (req, res) => {
@@ -31,25 +71,30 @@ app.get("/webhook", (req, res) => {
     mode === "subscribe" &&
     token === process.env.VERIFY_TOKEN
   ) {
-    console.log("✅ Webhook Verified Successfully");
+    console.log("✅ Facebook Webhook Verified");
+
     return res.status(200).send(challenge);
   }
 
   console.log("❌ Webhook Verification Failed");
+
   return res.sendStatus(403);
 });
 
 // ==========================================
-// SEND TELEGRAM MESSAGE
+// TELEGRAM MESSAGE SENDER
 // ==========================================
 
 async function sendTelegramMessage(
   botToken,
   chatId,
-  message
+  message,
+  leadType
 ) {
   if (!botToken || !chatId) {
-    throw new Error("Telegram Bot Token or Chat ID missing");
+    throw new Error(
+      `${leadType}: Telegram Bot Token or Chat ID missing`
+    );
   }
 
   const telegramURL =
@@ -61,10 +106,15 @@ async function sendTelegramMessage(
   });
 
   if (!response.data.ok) {
-    throw new Error("Telegram message sending failed");
+    throw new Error(
+      `${leadType}: Telegram message sending failed`
+    );
   }
 
-  console.log("✅ Telegram Message Sent Successfully");
+  console.log(`✅ ${leadType} Telegram Message Sent`);
+  console.log("Telegram Message ID:", response.data.result.message_id);
+
+  return response.data;
 }
 
 // ==========================================
@@ -75,7 +125,7 @@ function extractLeadFields(leadData) {
   const fields = {};
 
   if (Array.isArray(leadData.field_data)) {
-    leadData.field_data.forEach((field) => {
+    leadData.field_data.forEach(field => {
       fields[field.name] = Array.isArray(field.values)
         ? field.values.join(", ")
         : "";
@@ -86,16 +136,32 @@ function extractLeadFields(leadData) {
 }
 
 // ==========================================
+// NORMALIZE FIELD NAMES
+// ==========================================
+
+function normalizeFieldName(name) {
+  return String(name)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+// ==========================================
 // GET FIELD VALUE
 // ==========================================
 
 function getField(fields, possibleNames) {
+  const normalizedFields = {};
+
+  Object.entries(fields).forEach(([key, value]) => {
+    normalizedFields[normalizeFieldName(key)] = value;
+  });
+
   for (const name of possibleNames) {
-    if (
-      fields[name] !== undefined &&
-      fields[name] !== ""
-    ) {
-      return fields[name];
+    const value =
+      normalizedFields[normalizeFieldName(name)];
+
+    if (value !== undefined && value !== "") {
+      return value;
     }
   }
 
@@ -107,7 +173,7 @@ function getField(fields, possibleNames) {
 // ==========================================
 
 function formatFieldName(name) {
-  return name
+  return String(name)
     .replace(/_/g, " ")
     .replace(/\?/g, "")
     .replace(/\b\w/g, char => char.toUpperCase());
@@ -118,14 +184,16 @@ function formatFieldName(name) {
 // ==========================================
 
 function buildEducationMessage(fields, leadId) {
-
   return `
 🎓 NEW EDUCATION LOAN LEAD
 ━━━━━━━━━━━━━━━━━━━━
 
-👤 Name: ${getField(fields, ["full_name"])}
+👤 Name: ${getField(fields, ["full_name", "name"])}
+
 📧 Email: ${getField(fields, ["email"])}
-📱 Phone: ${getField(fields, ["phone_number"])}
+
+📱 Phone: ${getField(fields, ["phone_number", "phone"])}
+
 🏙️ City: ${getField(fields, ["city"])}
 
 🌍 Country:
@@ -170,30 +238,14 @@ ${getField(fields, [
 // ==========================================
 
 function buildHomeLoanMessage(fields, leadId) {
-
-  const loanType = getField(fields, [
-    "which_loan_do_you_need",
-    "which_loan_do_you_need?",
-    "loan_type"
-  ]);
-
-  const loanAmount = getField(fields, [
-    "loan_amount_required",
-    "loan_amount",
-    "what_is_your_loan_amount"
-  ]);
-
-  const employmentType = getField(fields, [
-    "employment_type",
-    "what_is_your_employment_type"
-  ]);
-
   const name = getField(fields, [
-    "full_name"
+    "full_name",
+    "name"
   ]);
 
   const phone = getField(fields, [
-    "phone_number"
+    "phone_number",
+    "phone"
   ]);
 
   const email = getField(fields, [
@@ -204,13 +256,35 @@ function buildHomeLoanMessage(fields, leadId) {
     "city"
   ]);
 
+  const loanType = getField(fields, [
+    "which_loan_do_you_need",
+    "which_loan_do_you_need?",
+    "loan_type"
+  ]);
+
+  const loanAmount = getField(fields, [
+    "loan_amount_required",
+    "loan_amount",
+    "what_is_your_loan_amount",
+    "loan_amount_required?"
+  ]);
+
+  const employmentType = getField(fields, [
+    "employment_type",
+    "employment_type?",
+    "what_is_your_employment_type"
+  ]);
+
   let message = `
 🏠 NEW HOME LOAN LEAD
 ━━━━━━━━━━━━━━━━━━━━
 
-👤 Name: ${name}
-📱 Phone: ${phone}
+👤 Full Name: ${name}
+
+📱 Phone Number: ${phone}
+
 📧 Email: ${email}
+
 🏙️ City: ${city}
 
 🏦 Loan Type: ${loanType}
@@ -222,38 +296,43 @@ ${loanAmount}
 ${employmentType}
 
 ━━━━━━━━━━━━━━━━━━━━
-📋 OTHER FORM DETAILS
+📋 ADDITIONAL FORM DETAILS
 ━━━━━━━━━━━━━━━━━━━━
 `;
 
-  // Include all additional Facebook form answers.
+  // Add all additional Facebook form answers.
+  // This also supports newly added custom questions.
+
+  const excludedFields = [
+    "full_name",
+    "name",
+    "phone_number",
+    "phone",
+    "email",
+    "city",
+    "which_loan_do_you_need",
+    "which_loan_do_you_need?",
+    "loan_type",
+    "loan_amount_required",
+    "loan_amount",
+    "what_is_your_loan_amount",
+    "loan_amount_required?",
+    "employment_type",
+    "employment_type?",
+    "what_is_your_employment_type"
+  ].map(normalizeFieldName);
+
   Object.entries(fields).forEach(([key, value]) => {
-
-    const excludedFields = [
-      "full_name",
-      "phone_number",
-      "email",
-      "city",
-      "which_loan_do_you_need",
-      "which_loan_do_you_need?",
-      "loan_type",
-      "loan_amount_required",
-      "loan_amount",
-      "what_is_your_loan_amount",
-      "employment_type",
-      "what_is_your_employment_type"
-    ];
-
-    if (!excludedFields.includes(key)) {
-      message += `\n📌 ${formatFieldName(key)}: ${value || "N/A"}`;
+    if (!excludedFields.includes(normalizeFieldName(key))) {
+      message += `\n📌 ${formatFieldName(key)}: ${value || "N/A"}\n`;
     }
   });
 
   message += `
+━━━━━━━━━━━━━━━━━━━━
 
 🆔 Lead ID: ${leadId}
 
-━━━━━━━━━━━━━━━━━━━━
 📌 Loan Destination
 `;
 
@@ -265,28 +344,36 @@ ${employmentType}
 // ==========================================
 
 async function processLead(change) {
-
   if (change.field !== "leadgen") {
     return;
   }
 
   const leadId = change.value.leadgen_id;
 
-  console.log("\n================================");
+  if (!leadId) {
+    console.log("⚠️ Lead ID missing");
+    return;
+  }
+
+  console.log("\n========================================");
   console.log("🚀 NEW FACEBOOK LEAD RECEIVED");
   console.log("Lead ID:", leadId);
-  console.log("================================");
+  console.log("========================================");
+
+  if (!PAGE_ACCESS_TOKEN) {
+    throw new Error("PAGE_ACCESS_TOKEN is missing");
+  }
 
   // ========================================
-  // FETCH LEAD DETAILS FROM FACEBOOK
+  // FETCH LEAD DETAILS
   // ========================================
 
   const response = await axios.get(
-    `https://graph.facebook.com/v25.0/${leadId}`,
+    `https://graph.facebook.com/${FACEBOOK_API_VERSION}/${leadId}`,
     {
       params: {
         fields: "id,created_time,form_id,field_data",
-        access_token: process.env.PAGE_ACCESS_TOKEN
+        access_token: PAGE_ACCESS_TOKEN
       }
     }
   );
@@ -296,33 +383,70 @@ async function processLead(change) {
   const fields = extractLeadFields(leadData);
 
   const formId = String(
-    leadData.form_id || change.value.form_id || ""
-  );
+    leadData.form_id ||
+    change.value.form_id ||
+    ""
+  ).trim();
 
   console.log("Facebook Form ID:", formId);
-  console.log("Lead Fields:", fields);
 
   // ========================================
-  // FORM IDS
+  // FORM ROUTING DEBUG
   // ========================================
 
-  const educationFormId = String(
-    process.env.EDUCATION_FORM_ID || ""
+  const isEducationLead =
+    EDUCATION_FORM_IDS.includes(formId);
+
+  const isHomeLoanLead =
+    formId === HOME_LOAN_FORM_ID;
+
+  console.log("\n========== FORM ROUTING DEBUG ==========");
+
+  console.log("Received Form ID:", formId);
+
+  console.log(
+    "Education Form IDs:",
+    EDUCATION_FORM_IDS
   );
 
-  const homeLoanFormId = String(
-    process.env.HOME_LOAN_FORM_ID || ""
+  console.log(
+    "Home Loan Form ID:",
+    HOME_LOAN_FORM_ID || "NOT CONFIGURED"
   );
 
+  console.log("Is Education:", isEducationLead);
+
+  console.log("Is Home Loan:", isHomeLoanLead);
+
+  console.log("========================================");
+
   // ========================================
-  // EDUCATION LOAN ROUTING
+  // ROUTING 1: HOME LOAN
   // ========================================
 
-  if (
-    educationFormId &&
-    formId === educationFormId
-  ) {
+  if (isHomeLoanLead) {
+    console.log("🏠 HOME / CONSTRUCTION / SHOP LEAD DETECTED");
 
+    const message = buildHomeLoanMessage(
+      fields,
+      leadId
+    );
+
+    await sendTelegramMessage(
+      HOME_BOT_TOKEN,
+      HOME_CHAT_ID,
+      message,
+      "HOME LOAN"
+    );
+
+    return;
+  }
+
+  // ========================================
+  // ROUTING 2: EDUCATION LOAN
+  // ========================================
+
+  if (isEducationLead) {
     console.log("🎓 EDUCATION LOAN LEAD DETECTED");
 
     const message = buildEducationMessage(
@@ -331,51 +455,24 @@ async function processLead(change) {
     );
 
     await sendTelegramMessage(
-      process.env.EDU_TELEGRAM_BOT_TOKEN ||
-      process.env.TELEGRAM_BOT_TOKEN,
-
-      process.env.EDU_TELEGRAM_CHAT_ID ||
-      process.env.TELEGRAM_CHAT_ID,
-
-      message
+      EDU_BOT_TOKEN,
+      EDU_CHAT_ID,
+      message,
+      "EDUCATION LOAN"
     );
 
+    return;
   }
 
   // ========================================
-  // HOME LOAN ROUTING
+  // UNKNOWN FACEBOOK FORM
   // ========================================
 
-  else if (
-    homeLoanFormId &&
-    formId === homeLoanFormId
-  ) {
+  console.log("⚠️ UNKNOWN FACEBOOK FORM ID");
 
-    console.log("🏠 HOME LOAN LEAD DETECTED");
+  console.log("Form ID:", formId);
 
-    const message = buildHomeLoanMessage(
-      fields,
-      leadId
-    );
-
-    await sendTelegramMessage(
-      process.env.HOME_TELEGRAM_BOT_TOKEN,
-      process.env.HOME_TELEGRAM_CHAT_ID,
-      message
-    );
-
-  }
-
-  // ========================================
-  // UNKNOWN FORM
-  // ========================================
-
-  else {
-
-    console.log("⚠️ UNKNOWN FACEBOOK FORM");
-    console.log("Form ID:", formId);
-    console.log("Please configure the correct Form ID in .env");
-  }
+  console.log("Lead was not sent to either Telegram bot.");
 }
 
 // ==========================================
@@ -383,31 +480,25 @@ async function processLead(change) {
 // ==========================================
 
 app.post("/webhook", (req, res) => {
-
   const body = req.body;
 
   if (body.object !== "page") {
     return res.sendStatus(404);
   }
 
-  // Respond immediately to Facebook.
+  // Acknowledge Facebook immediately.
   res.sendStatus(200);
 
-  // Process webhook events.
+  // Process every lead event.
   for (const entry of body.entry || []) {
-
     for (const change of entry.changes || []) {
-
-      processLead(change).catch((error) => {
-
+      processLead(change).catch(error => {
         console.error("\n❌ LEAD PROCESSING ERROR");
 
         console.error(
           error.response?.data || error.message
         );
-
       });
-
     }
   }
 });
@@ -416,95 +507,58 @@ app.post("/webhook", (req, res) => {
 // ENVIRONMENT CHECK
 // ==========================================
 
-console.log("\n========== ENV CHECK ==========");
+console.log("\n========== ENVIRONMENT CHECK ==========");
 
 console.log(
   "VERIFY_TOKEN:",
-  process.env.VERIFY_TOKEN ? "FOUND" : "NOT FOUND"
+  process.env.VERIFY_TOKEN ? "FOUND" : "MISSING"
 );
 
 console.log(
   "PAGE_ACCESS_TOKEN:",
-  process.env.PAGE_ACCESS_TOKEN ? "FOUND" : "NOT FOUND"
+  PAGE_ACCESS_TOKEN ? "FOUND" : "MISSING"
 );
 
 console.log(
-  "EDUCATION BOT:",
-  process.env.EDU_TELEGRAM_BOT_TOKEN ||
-  process.env.TELEGRAM_BOT_TOKEN
-    ? "FOUND"
-    : "NOT FOUND"
+  "EDUCATION TELEGRAM BOT:",
+  EDU_BOT_TOKEN ? "FOUND" : "MISSING"
 );
 
 console.log(
-  "EDUCATION CHAT ID:",
-  process.env.EDU_TELEGRAM_CHAT_ID ||
-  process.env.TELEGRAM_CHAT_ID
-    ? "FOUND"
-    : "NOT FOUND"
+  "EDUCATION TELEGRAM CHAT:",
+  EDU_CHAT_ID ? "FOUND" : "MISSING"
 );
 
 console.log(
-  "HOME BOT:",
-  process.env.HOME_TELEGRAM_BOT_TOKEN
-    ? "FOUND"
-    : "NOT FOUND"
+  "HOME TELEGRAM BOT:",
+  HOME_BOT_TOKEN ? "FOUND" : "MISSING"
 );
 
 console.log(
-  "HOME CHAT ID:",
-  process.env.HOME_TELEGRAM_CHAT_ID
-    ? "FOUND"
-    : "NOT FOUND"
+  "HOME TELEGRAM CHAT:",
+  HOME_CHAT_ID ? "FOUND" : "MISSING"
 );
 
 console.log(
-  "EDUCATION FORM ID:",
-  process.env.EDUCATION_FORM_ID || "NOT FOUND"
+  "EDUCATION FORM IDS:",
+  EDUCATION_FORM_IDS.length
+    ? EDUCATION_FORM_IDS.join(", ")
+    : "MISSING"
 );
 
 console.log(
-  "HOME FORM ID:",
-  process.env.HOME_LOAN_FORM_ID || "NOT FOUND"
-);
-
-
-console.log("========== FORM ROUTING DEBUG ==========");
-
-console.log("Received Form ID:", formId);
-
-console.log(
-  "Education Form ID:",
-  process.env.EDUCATION_FORM_ID
-);
-
-console.log(
-  "Home Loan Form ID:",
-  process.env.HOME_LOAN_FORM_ID
-);
-
-console.log(
-  "Is Education:",
-  formId === process.env.EDUCATION_FORM_ID
-);
-
-console.log(
-  "Is Home Loan:",
-  formId === process.env.HOME_LOAN_FORM_ID
+  "HOME LOAN FORM ID:",
+  HOME_LOAN_FORM_ID || "MISSING"
 );
 
 console.log("========================================");
-
-console.log("================================");
 
 // ==========================================
 // START SERVER
 // ==========================================
 
-const PORT = process.env.PORT || 5000;
-
 app.listen(PORT, () => {
   console.log(
-    `🚀 Server running on port ${PORT}`
+    `🚀 Facebook Lead Webhook Running on Port ${PORT}`
   );
 });
