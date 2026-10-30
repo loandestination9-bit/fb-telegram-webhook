@@ -468,6 +468,33 @@ console.log(
   process.env.HOME_LOAN_FORM_ID || "NOT FOUND"
 );
 
+
+console.log("========== FORM ROUTING DEBUG ==========");
+
+console.log("Received Form ID:", formId);
+
+console.log(
+  "Education Form ID:",
+  process.env.EDUCATION_FORM_ID
+);
+
+console.log(
+  "Home Loan Form ID:",
+  process.env.HOME_LOAN_FORM_ID
+);
+
+console.log(
+  "Is Education:",
+  formId === process.env.EDUCATION_FORM_ID
+);
+
+console.log(
+  "Is Home Loan:",
+  formId === process.env.HOME_LOAN_FORM_ID
+);
+
+console.log("========================================");
+
 console.log("================================");
 
 // ==========================================
