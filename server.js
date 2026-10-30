@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -8,56 +7,90 @@ const app = express();
 
 app.use(express.json());
 
+const PORT = process.env.PORT || 3000;
+
 // ==========================================
 // CONFIGURATION
 // ==========================================
 
-const PORT = process.env.PORT || 5000;
-const FACEBOOK_API_VERSION = "v25.0";
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 
-// Support one or multiple Education Loan forms
+const GRAPH_API_VERSION = "v25.0";
+
+// Home Loan form ID
+const HOME_LOAN_FORM_ID = process.env.HOME_LOAN_FORM_ID;
+
+// Education Loan form IDs (comma-separated)
 const EDUCATION_FORM_IDS = (
   process.env.EDUCATION_FORM_IDS ||
   process.env.EDUCATION_FORM_ID ||
   ""
 )
   .split(",")
-  .map(id => id.trim())
+  .map((id) => id.trim())
   .filter(Boolean);
 
-// Home Loan form
-const HOME_LOAN_FORM_ID = String(
-  process.env.HOME_LOAN_FORM_ID || ""
-).trim();
-
-// Education Telegram credentials
-const EDU_BOT_TOKEN =
+// Education Telegram configuration
+const EDUCATION_BOT_TOKEN =
   process.env.EDU_TELEGRAM_BOT_TOKEN ||
   process.env.TELEGRAM_BOT_TOKEN;
 
-const EDU_CHAT_ID =
+const EDUCATION_CHAT_ID =
   process.env.EDU_TELEGRAM_CHAT_ID ||
   process.env.TELEGRAM_CHAT_ID;
 
-// Home Loan Telegram credentials
-const HOME_BOT_TOKEN =
-  process.env.HOME_TELEGRAM_BOT_TOKEN;
+// Home Telegram configuration
+const HOME_BOT_TOKEN = process.env.HOME_TELEGRAM_BOT_TOKEN;
 
-const HOME_CHAT_ID =
-  process.env.HOME_TELEGRAM_CHAT_ID;
+const HOME_CHAT_ID = process.env.HOME_TELEGRAM_CHAT_ID;
+
+// ==========================================
+// ENVIRONMENT VALIDATION
+// ==========================================
+
+console.log("========== SERVER CONFIGURATION ==========");
+
+console.log("VERIFY_TOKEN:", VERIFY_TOKEN ? "Configured" : "Missing");
+console.log("PAGE_ACCESS_TOKEN:", PAGE_ACCESS_TOKEN ? "Configured" : "Missing");
+
+console.log("HOME_LOAN_FORM_ID:", HOME_LOAN_FORM_ID || "Missing");
+
+console.log("EDUCATION_FORM_IDS:", EDUCATION_FORM_IDS);
+
+console.log(
+  "EDUCATION_BOT_TOKEN:",
+  EDUCATION_BOT_TOKEN ? "Configured" : "Missing"
+);
+
+console.log(
+  "EDUCATION_CHAT_ID:",
+  EDUCATION_CHAT_ID || "Missing"
+);
+
+console.log(
+  "HOME_BOT_TOKEN:",
+  HOME_BOT_TOKEN ? "Configured" : "Missing"
+);
+
+console.log(
+  "HOME_CHAT_ID:",
+  HOME_CHAT_ID || "Missing"
+);
+
+console.log("==========================================");
 
 // ==========================================
 // ROOT ROUTE
 // ==========================================
 
 app.get("/", (req, res) => {
-  res.send("Facebook Lead Webhook Server Running 🚀");
+  res.status(200).send("Loan Destination Facebook Telegram Webhook is Running!");
 });
 
 // ==========================================
-// WEBHOOK VERIFICATION
+// FACEBOOK WEBHOOK VERIFICATION
 // ==========================================
 
 app.get("/webhook", (req, res) => {
@@ -65,35 +98,276 @@ app.get("/webhook", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  console.log("Facebook Webhook Verification Request");
-
-  if (
-    mode === "subscribe" &&
-    token === process.env.VERIFY_TOKEN
-  ) {
-    console.log("✅ Facebook Webhook Verified");
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("Facebook webhook verified successfully.");
 
     return res.status(200).send(challenge);
   }
 
-  console.log("❌ Webhook Verification Failed");
+  console.log("Facebook webhook verification failed.");
 
   return res.sendStatus(403);
 });
 
 // ==========================================
+// FIELD HELPERS
+// ==========================================
+
+function normalizeFieldName(name = "") {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function getLeadFields(fieldData = []) {
+  const fields = {};
+
+  fieldData.forEach((field) => {
+    const key = normalizeFieldName(field.name);
+
+    const value = Array.isArray(field.values)
+      ? field.values[0]
+      : "";
+
+    fields[key] = value || "";
+  });
+
+  return fields;
+}
+
+function getField(fields, ...possibleNames) {
+  for (const name of possibleNames) {
+    const key = normalizeFieldName(name);
+
+    if (fields[key] !== undefined && fields[key] !== "") {
+      return fields[key];
+    }
+  }
+
+  return "N/A";
+}
+
+function cleanValue(value) {
+  if (!value || value === "") {
+    return "N/A";
+  }
+
+  return String(value).trim();
+}
+
+// ==========================================
+// LOAN TYPE DETECTION
+// ==========================================
+
+function detectLoanType(formId, fields) {
+  const currentFormId = String(formId || "").trim();
+
+  // FIRST PRIORITY: HOME LOAN FORM ID
+
+  if (
+    HOME_LOAN_FORM_ID &&
+    currentFormId === HOME_LOAN_FORM_ID.trim()
+  ) {
+    return "home";
+  }
+
+  // SECOND PRIORITY: EDUCATION LOAN FORM ID
+
+  if (EDUCATION_FORM_IDS.includes(currentFormId)) {
+    return "education";
+  }
+
+  // THIRD PRIORITY: LOAN TYPE FIELD
+
+  const loanValue = getField(
+    fields,
+    "which_loan_do_you_need?",
+    "which_loan_do_you_need",
+    "loan_type",
+    "loan_type_required",
+    "loan_category"
+  );
+
+  const loanType = String(loanValue).toLowerCase();
+
+  if (
+    loanType.includes("home") ||
+    loanType.includes("house")
+  ) {
+    return "home";
+  }
+
+  if (
+    loanType.includes("education") ||
+    loanType.includes("student")
+  ) {
+    return "education";
+  }
+
+  // DO NOT GUESS UNKNOWN LOAN TYPES
+
+  return null;
+}
+
+// ==========================================
+// EDUCATION LOAN MESSAGE
+// ==========================================
+
+function createEducationMessage(fields, leadId) {
+  const name = getField(fields, "full_name", "name");
+
+  const email = getField(fields, "email", "email_address");
+
+  const phone = getField(
+    fields,
+    "phone_number",
+    "phone",
+    "mobile_number"
+  );
+
+  const city = getField(fields, "city");
+
+  const country = getField(
+    fields,
+    "country",
+    "destination_country",
+    "preferred_country"
+  );
+
+  const university = getField(
+    fields,
+    "university",
+    "university_name",
+    "preferred_university"
+  );
+
+  const intake = getField(
+    fields,
+    "intake",
+    "preferred_intake",
+    "study_intake"
+  );
+
+  const amount = getField(
+    fields,
+    "loan_amount_required",
+    "loan_amount",
+    "required_loan_amount"
+  );
+
+  const loanType = getField(
+    fields,
+    "which_loan_do_you_need?",
+    "loan_type"
+  );
+
+  const appliedAbroad = getField(
+    fields,
+    "applied_abroad_university",
+    "have_you_applied_to_university"
+  );
+
+  return `🚀 New Education Loan Lead
+
+👤 Name: ${cleanValue(name)}
+📧 Email: ${cleanValue(email)}
+📱 Phone: ${cleanValue(phone)}
+🏙️ City: ${cleanValue(city)}
+
+🌍 Country: ${cleanValue(country)}
+
+🎓 University: ${cleanValue(university)}
+
+📅 Intake: ${cleanValue(intake)}
+
+💰 Loan Amount: ${cleanValue(amount)}
+
+🏦 Loan Type: ${cleanValue(loanType)}
+
+✅ Applied Abroad University: ${cleanValue(appliedAbroad)}
+
+🆔 Lead ID: ${leadId}`;
+}
+
+// ==========================================
+// HOME LOAN MESSAGE
+// ==========================================
+
+function createHomeLoanMessage(fields, leadId) {
+  const name = getField(fields, "full_name", "name");
+
+  const email = getField(fields, "email", "email_address");
+
+  const phone = getField(
+    fields,
+    "phone_number",
+    "phone",
+    "mobile_number"
+  );
+
+  const city = getField(fields, "city");
+
+  const amount = getField(
+    fields,
+    "loan_amount_required",
+    "loan_amount",
+    "required_loan_amount"
+  );
+
+  const employment = getField(
+    fields,
+    "employment_type",
+    "employment_status",
+    "occupation"
+  );
+
+  const loanType = getField(
+    fields,
+    "which_loan_do_you_need?",
+    "loan_type"
+  );
+
+  return `🏠 NEW HOME LOAN LEAD
+
+👤 Name: ${cleanValue(name)}
+
+📧 Email: ${cleanValue(email)}
+
+📱 Phone: ${cleanValue(phone)}
+
+🏙️ City: ${cleanValue(city)}
+
+🏦 Loan Type: ${cleanValue(loanType)}
+
+💰 Loan Amount: ${cleanValue(amount)}
+
+💼 Employment Type: ${cleanValue(employment)}
+
+🆔 Lead ID: ${leadId}`;
+}
+
+// ==========================================
 // TELEGRAM MESSAGE SENDER
 // ==========================================
 
-async function sendTelegramMessage(
-  botToken,
-  chatId,
-  message,
-  leadType
-) {
+async function sendTelegramMessage(loanType, message) {
+  let botToken;
+  let chatId;
+  let groupName;
+
+  if (loanType === "home") {
+    botToken = HOME_BOT_TOKEN;
+    chatId = HOME_CHAT_ID;
+    groupName = "Home Loan Group";
+  } else if (loanType === "education") {
+    botToken = EDUCATION_BOT_TOKEN;
+    chatId = EDUCATION_CHAT_ID;
+    groupName = "Education Loan Group";
+  } else {
+    throw new Error("Invalid loan type for Telegram routing.");
+  }
+
   if (!botToken || !chatId) {
     throw new Error(
-      `${leadType}: Telegram Bot Token or Chat ID missing`
+      `${groupName} Telegram configuration is missing.`
     );
   }
 
@@ -102,463 +376,158 @@ async function sendTelegramMessage(
 
   const response = await axios.post(telegramURL, {
     chat_id: chatId,
-    text: message
+    text: message,
   });
 
   if (!response.data.ok) {
     throw new Error(
-      `${leadType}: Telegram message sending failed`
+      response.data.description || "Telegram message failed."
     );
   }
 
-  console.log(`✅ ${leadType} Telegram Message Sent`);
-  console.log("Telegram Message ID:", response.data.result.message_id);
+  console.log(`Telegram message successfully sent to ${groupName}`);
 
   return response.data;
 }
 
 // ==========================================
-// EXTRACT FACEBOOK LEAD FIELDS
+// FETCH FACEBOOK LEAD DETAILS
 // ==========================================
 
-function extractLeadFields(leadData) {
-  const fields = {};
+async function fetchFacebookLead(leadId) {
+  const url =
+    `https://graph.facebook.com/${GRAPH_API_VERSION}/${leadId}`;
 
-  if (Array.isArray(leadData.field_data)) {
-    leadData.field_data.forEach(field => {
-      fields[field.name] = Array.isArray(field.values)
-        ? field.values.join(", ")
-        : "";
-    });
-  }
-
-  return fields;
-}
-
-// ==========================================
-// NORMALIZE FIELD NAMES
-// ==========================================
-
-function normalizeFieldName(name) {
-  return String(name)
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-}
-
-// ==========================================
-// GET FIELD VALUE
-// ==========================================
-
-function getField(fields, possibleNames) {
-  const normalizedFields = {};
-
-  Object.entries(fields).forEach(([key, value]) => {
-    normalizedFields[normalizeFieldName(key)] = value;
+  const response = await axios.get(url, {
+    params: {
+      access_token: PAGE_ACCESS_TOKEN,
+      fields: "id,created_time,form_id,field_data",
+    },
   });
 
-  for (const name of possibleNames) {
-    const value =
-      normalizedFields[normalizeFieldName(name)];
-
-    if (value !== undefined && value !== "") {
-      return value;
-    }
-  }
-
-  return "N/A";
-}
-
-// ==========================================
-// FORMAT FIELD LABEL
-// ==========================================
-
-function formatFieldName(name) {
-  return String(name)
-    .replace(/_/g, " ")
-    .replace(/\?/g, "")
-    .replace(/\b\w/g, char => char.toUpperCase());
-}
-
-// ==========================================
-// EDUCATION LOAN MESSAGE
-// ==========================================
-
-function buildEducationMessage(fields, leadId) {
-  return `
-🎓 NEW EDUCATION LOAN LEAD
-━━━━━━━━━━━━━━━━━━━━
-
-👤 Name: ${getField(fields, ["full_name", "name"])}
-
-📧 Email: ${getField(fields, ["email"])}
-
-📱 Phone: ${getField(fields, ["phone_number", "phone"])}
-
-🏙️ City: ${getField(fields, ["city"])}
-
-🌍 Country:
-${getField(fields, [
-  "pick_your_destination_to_study_abroad"
-])}
-
-🎓 University:
-${getField(fields, [
-  "you_preferred_university",
-  "you_preferred_university?"
-])}
-
-📅 Intake:
-${getField(fields, [
-  "which_intake_are_you_planning",
-  "which_intake_are_you_planning?"
-])}
-
-💰 Loan Amount:
-${getField(fields, [
-  "what's_the_loan_amount_youre_looking_for",
-  "what's_the_loan_amount_you're_looking_for?",
-  "whats_the_loan_amount_youre_looking_for"
-])}
-
-🏦 Loan Type:
-${getField(fields, [
-  "which_type_of_loan_do_you_want",
-  "which_type_of_loan_do_you_want?"
-])}
-
-🆔 Lead ID: ${leadId}
-
-━━━━━━━━━━━━━━━━━━━━
-📌 Loan Destination
-`;
-}
-
-// ==========================================
-// HOME LOAN MESSAGE
-// ==========================================
-
-function buildHomeLoanMessage(fields, leadId) {
-  const name = getField(fields, [
-    "full_name",
-    "name"
-  ]);
-
-  const phone = getField(fields, [
-    "phone_number",
-    "phone"
-  ]);
-
-  const email = getField(fields, [
-    "email"
-  ]);
-
-  const city = getField(fields, [
-    "city"
-  ]);
-
-  const loanType = getField(fields, [
-    "which_loan_do_you_need",
-    "which_loan_do_you_need?",
-    "loan_type"
-  ]);
-
-  const loanAmount = getField(fields, [
-    "loan_amount_required",
-    "loan_amount",
-    "what_is_your_loan_amount",
-    "loan_amount_required?"
-  ]);
-
-  const employmentType = getField(fields, [
-    "employment_type",
-    "employment_type?",
-    "what_is_your_employment_type"
-  ]);
-
-  let message = `
-🏠 NEW HOME LOAN LEAD
-━━━━━━━━━━━━━━━━━━━━
-
-👤 Full Name: ${name}
-
-📱 Phone Number: ${phone}
-
-📧 Email: ${email}
-
-🏙️ City: ${city}
-
-🏦 Loan Type: ${loanType}
-
-💰 Loan Amount Required:
-${loanAmount}
-
-💼 Employment Type:
-${employmentType}
-
-━━━━━━━━━━━━━━━━━━━━
-📋 ADDITIONAL FORM DETAILS
-━━━━━━━━━━━━━━━━━━━━
-`;
-
-  // Add all additional Facebook form answers.
-  // This also supports newly added custom questions.
-
-  const excludedFields = [
-    "full_name",
-    "name",
-    "phone_number",
-    "phone",
-    "email",
-    "city",
-    "which_loan_do_you_need",
-    "which_loan_do_you_need?",
-    "loan_type",
-    "loan_amount_required",
-    "loan_amount",
-    "what_is_your_loan_amount",
-    "loan_amount_required?",
-    "employment_type",
-    "employment_type?",
-    "what_is_your_employment_type"
-  ].map(normalizeFieldName);
-
-  Object.entries(fields).forEach(([key, value]) => {
-    if (!excludedFields.includes(normalizeFieldName(key))) {
-      message += `\n📌 ${formatFieldName(key)}: ${value || "N/A"}\n`;
-    }
-  });
-
-  message += `
-━━━━━━━━━━━━━━━━━━━━
-
-🆔 Lead ID: ${leadId}
-
-📌 Loan Destination
-`;
-
-  return message;
+  return response.data;
 }
 
 // ==========================================
 // PROCESS FACEBOOK LEAD
 // ==========================================
 
-async function processLead(change) {
-  if (change.field !== "leadgen") {
-    return;
-  }
+async function processFacebookLead(leadId) {
+  console.log("\n========== PROCESSING NEW LEAD ==========");
 
-  const leadId = change.value.leadgen_id;
-
-  if (!leadId) {
-    console.log("⚠️ Lead ID missing");
-    return;
-  }
-
-  console.log("\n========================================");
-  console.log("🚀 NEW FACEBOOK LEAD RECEIVED");
   console.log("Lead ID:", leadId);
-  console.log("========================================");
 
-  if (!PAGE_ACCESS_TOKEN) {
-    throw new Error("PAGE_ACCESS_TOKEN is missing");
-  }
+  // Fetch lead details from Facebook
 
-  // ========================================
-  // FETCH LEAD DETAILS
-  // ========================================
+  const leadData = await fetchFacebookLead(leadId);
 
-  const response = await axios.get(
-    `https://graph.facebook.com/${FACEBOOK_API_VERSION}/${leadId}`,
-    {
-      params: {
-        fields: "id,created_time,form_id,field_data",
-        access_token: PAGE_ACCESS_TOKEN
-      }
-    }
-  );
+  console.log("Facebook Lead Data Received");
 
-  const leadData = response.data;
+  const fields = getLeadFields(leadData.field_data);
 
-  const fields = extractLeadFields(leadData);
-
-  const formId = String(
-    leadData.form_id ||
-    change.value.form_id ||
-    ""
-  ).trim();
-
-  console.log("Facebook Form ID:", formId);
-
-  // ========================================
-  // FORM ROUTING DEBUG
-  // ========================================
-
-  const isEducationLead =
-    EDUCATION_FORM_IDS.includes(formId);
-
-  const isHomeLoanLead =
-    formId === HOME_LOAN_FORM_ID;
-
-  console.log("\n========== FORM ROUTING DEBUG ==========");
-
-  console.log("Received Form ID:", formId);
-
-  console.log(
-    "Education Form IDs:",
-    EDUCATION_FORM_IDS
-  );
-
-  console.log(
-    "Home Loan Form ID:",
-    HOME_LOAN_FORM_ID || "NOT CONFIGURED"
-  );
-
-  console.log("Is Education:", isEducationLead);
-
-  console.log("Is Home Loan:", isHomeLoanLead);
-
-  console.log("========================================");
-
-  // ========================================
-  // ROUTING 1: HOME LOAN
-  // ========================================
-
-  if (isHomeLoanLead) {
-    console.log("🏠 HOME / CONSTRUCTION / SHOP LEAD DETECTED");
-
-    const message = buildHomeLoanMessage(
-      fields,
-      leadId
-    );
-
-    await sendTelegramMessage(
-      HOME_BOT_TOKEN,
-      HOME_CHAT_ID,
-      message,
-      "HOME LOAN"
-    );
-
-    return;
-  }
-
-  // ========================================
-  // ROUTING 2: EDUCATION LOAN
-  // ========================================
-
-  if (isEducationLead) {
-    console.log("🎓 EDUCATION LOAN LEAD DETECTED");
-
-    const message = buildEducationMessage(
-      fields,
-      leadId
-    );
-
-    await sendTelegramMessage(
-      EDU_BOT_TOKEN,
-      EDU_CHAT_ID,
-      message,
-      "EDUCATION LOAN"
-    );
-
-    return;
-  }
-
-  // ========================================
-  // UNKNOWN FACEBOOK FORM
-  // ========================================
-
-  console.log("⚠️ UNKNOWN FACEBOOK FORM ID");
+  const formId = String(leadData.form_id || "");
 
   console.log("Form ID:", formId);
 
-  console.log("Lead was not sent to either Telegram bot.");
+  console.log("Lead Fields:", fields);
+
+  // Detect loan type
+
+  const loanType = detectLoanType(formId, fields);
+
+  console.log("Detected Loan Type:", loanType);
+
+  if (!loanType) {
+    console.error(
+      "Unknown loan type. Lead was NOT sent to any Telegram group."
+    );
+
+    return;
+  }
+
+  // Create the correct message
+
+  let message;
+
+  if (loanType === "home") {
+    message = createHomeLoanMessage(fields, leadId);
+  } else {
+    message = createEducationMessage(fields, leadId);
+  }
+
+  console.log("Telegram Destination:", loanType);
+
+  console.log("Telegram Message:\n", message);
+
+  // Send to the correct Telegram group
+
+  await sendTelegramMessage(loanType, message);
+
+  console.log("Lead processed successfully.");
+
+  console.log("=========================================\n");
 }
 
 // ==========================================
-// RECEIVE FACEBOOK WEBHOOK
+// FACEBOOK WEBHOOK RECEIVER
 // ==========================================
 
-app.post("/webhook", (req, res) => {
-  const body = req.body;
+app.post("/webhook", async (req, res) => {
+  try {
+    console.log("\n========== NEW WEBHOOK RECEIVED ==========");
 
-  if (body.object !== "page") {
-    return res.sendStatus(404);
-  }
+    const body = req.body;
 
-  // Acknowledge Facebook immediately.
-  res.sendStatus(200);
+    if (body.object !== "page") {
+      console.log("Unsupported webhook object.");
 
-  // Process every lead event.
-  for (const entry of body.entry || []) {
-    for (const change of entry.changes || []) {
-      processLead(change).catch(error => {
-        console.error("\n❌ LEAD PROCESSING ERROR");
+      return res.sendStatus(404);
+    }
 
-        console.error(
-          error.response?.data || error.message
-        );
-      });
+    // Acknowledge Facebook webhook
+
+    res.status(200).send("EVENT_RECEIVED");
+
+    // Process all incoming lead events
+
+    for (const entry of body.entry || []) {
+      for (const change of entry.changes || []) {
+        console.log("Webhook Field:", change.field);
+
+        if (change.field !== "leadgen") {
+          continue;
+        }
+
+        const leadId = change.value?.leadgen_id;
+
+        if (!leadId) {
+          console.log("Lead ID not found.");
+          continue;
+        }
+
+        try {
+          await processFacebookLead(leadId);
+        } catch (error) {
+          console.error(
+            "Lead Processing Error:",
+            error.response?.data || error.message
+          );
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Webhook Error:", error.message);
+
+    if (!res.headersSent) {
+      res.status(500).send("Webhook processing failed.");
     }
   }
 });
-
-// ==========================================
-// ENVIRONMENT CHECK
-// ==========================================
-
-console.log("\n========== ENVIRONMENT CHECK ==========");
-
-console.log(
-  "VERIFY_TOKEN:",
-  process.env.VERIFY_TOKEN ? "FOUND" : "MISSING"
-);
-
-console.log(
-  "PAGE_ACCESS_TOKEN:",
-  PAGE_ACCESS_TOKEN ? "FOUND" : "MISSING"
-);
-
-console.log(
-  "EDUCATION TELEGRAM BOT:",
-  EDU_BOT_TOKEN ? "FOUND" : "MISSING"
-);
-
-console.log(
-  "EDUCATION TELEGRAM CHAT:",
-  EDU_CHAT_ID ? "FOUND" : "MISSING"
-);
-
-console.log(
-  "HOME TELEGRAM BOT:",
-  HOME_BOT_TOKEN ? "FOUND" : "MISSING"
-);
-
-console.log(
-  "HOME TELEGRAM CHAT:",
-  HOME_CHAT_ID ? "FOUND" : "MISSING"
-);
-
-console.log(
-  "EDUCATION FORM IDS:",
-  EDUCATION_FORM_IDS.length
-    ? EDUCATION_FORM_IDS.join(", ")
-    : "MISSING"
-);
-
-console.log(
-  "HOME LOAN FORM ID:",
-  HOME_LOAN_FORM_ID || "MISSING"
-);
-
-console.log("========================================");
 
 // ==========================================
 // START SERVER
 // ==========================================
 
 app.listen(PORT, () => {
-  console.log(
-    `🚀 Facebook Lead Webhook Running on Port ${PORT}`
-  );
+  console.log(`Server running on port ${PORT}`);
 });
